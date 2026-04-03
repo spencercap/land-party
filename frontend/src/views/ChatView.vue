@@ -1,55 +1,93 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { supabase } from '../utils/supabase'
 
 interface Message {
   id: number
   text: string
   author: string
-  timestamp: string
+  created_at: string
 }
 
-const messages = ref<Message[]>([
-  { id: 1, text: 'Welcome to the chat!', author: 'System', timestamp: formatTime(new Date()) },
-])
+const messages = ref<Message[]>([])
 const input = ref('')
 const listEl = ref<HTMLElement | null>(null)
-let nextId = 2
+const loading = ref(true)
+const error = ref<string | null>(null)
 
-function formatTime(d: Date) {
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+async function fetchMessages() {
+  const { data, error: err } = await supabase
+    .from('messages')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (err) {
+    error.value = err.message
+  } else {
+    messages.value = data ?? []
+    await nextTick()
+    listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
+  }
+  loading.value = false
 }
 
 async function send() {
   const text = input.value.trim()
   if (!text) return
-  messages.value.push({
-    id: nextId++,
-    text,
-    author: 'You',
-    timestamp: formatTime(new Date()),
-  })
   input.value = ''
-  await nextTick()
-  listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
+  const { error: err } = await supabase
+    .from('messages')
+    .insert({ text, author: 'You' })
+  if (err) error.value = err.message
 }
+
+// Realtime subscription — new rows appear instantly
+let channel: ReturnType<typeof supabase.channel>
+
+onMounted(async () => {
+  await fetchMessages()
+  channel = supabase
+    .channel('messages')
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages' },
+      async (payload) => {
+        messages.value.push(payload.new as Message)
+        await nextTick()
+        listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: 'smooth' })
+      }
+    )
+    .subscribe()
+})
+
+onUnmounted(() => {
+  channel?.unsubscribe()
+})
 </script>
 
 <template>
   <div class="chat-container">
     <div class="chat-header">Chat</div>
     <div class="chat-list" ref="listEl">
-      <div
-        v-for="msg in messages"
-        :key="msg.id"
-        class="chat-message"
-        :class="{ 'chat-message--self': msg.author === 'You' }"
-      >
-        <div class="chat-bubble">
-          <span class="chat-author">{{ msg.author }}</span>
-          <p class="chat-text">{{ msg.text }}</p>
-          <span class="chat-time">{{ msg.timestamp }}</span>
+      <div v-if="loading" class="chat-status">Loading…</div>
+      <div v-else-if="error" class="chat-status chat-status--error">{{ error }}</div>
+      <template v-else>
+        <div
+          v-for="msg in messages"
+          :key="msg.id"
+          class="chat-message"
+          :class="{ 'chat-message--self': msg.author === 'You' }"
+        >
+          <div class="chat-bubble">
+            <span class="chat-author">{{ msg.author }}</span>
+            <p class="chat-text">{{ msg.text }}</p>
+            <span class="chat-time">{{ formatTime(msg.created_at) }}</span>
+          </div>
         </div>
-      </div>
+      </template>
     </div>
     <form class="chat-input-row" @submit.prevent="send">
       <input
@@ -169,5 +207,16 @@ async function send() {
 
 .chat-send:hover {
   background: #4f46e5;
+}
+
+.chat-status {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.85rem;
+  padding: 1rem 0;
+}
+
+.chat-status--error {
+  color: #ef4444;
 }
 </style>
