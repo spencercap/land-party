@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { supabase } from '../utils/supabase'
 import { usePresence } from '../composables/usePresence'
 import OnlineList from '../components/OnlineList.vue'
@@ -10,9 +11,8 @@ interface Message {
   username: string
   user_id: string
   created_at: string
+  room: string
 }
-
-const ROOM = 'main'
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 
@@ -38,27 +38,34 @@ async function join() {
   localStorage.setItem(ME_KEY, JSON.stringify(me.value))
 }
 
-// ── Presence ──────────────────────────────────────────────────────────────────
+// ── Route ─────────────────────────────────────────────────────────────────────
 
-const { onlineUsers } = usePresence(me, ref(ROOM))
+const route = useRoute()
+const landId = computed(() => route.params.landId as string)
+
+// ── Presence (composable handles its own lifecycle + room/me watching) ────────
+
+const { onlineUsers } = usePresence(me, landId)
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 const messages = ref<Message[]>([])
 const input = ref('')
 const listEl = ref<HTMLElement | null>(null)
-const loading = ref(true)
+const loading = ref(false)
 const error = ref<string | null>(null)
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-async function fetchMessages() {
+async function fetchMessages(room: string) {
+  loading.value = true
+  error.value = null
   const { data, error: err } = await supabase
     .from('messages')
     .select('*')
-    .eq('room', ROOM)
+    .eq('room', room)
     .order('created_at', { ascending: true })
   if (err) { error.value = err.message }
   else {
@@ -77,21 +84,20 @@ async function send() {
     text,
     username: me.value.username,
     user_id: me.value.id,
-    room: ROOM,
+    room: landId.value,
   })
   if (err) error.value = err.message
 }
 
 let msgChannel: ReturnType<typeof supabase.channel> | null = null
 
-onMounted(async () => {
-  if (!me.value) return
-  await fetchMessages()
+function subscribeMsgs(room: string) {
+  msgChannel?.unsubscribe()
   msgChannel = supabase
-    .channel('messages:main')
+    .channel(`messages:${room}`)
     .on(
       'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'messages', filter: `room=eq.${ROOM}` },
+      { event: 'INSERT', schema: 'public', table: 'messages', filter: `room=eq.${room}` },
       async (payload) => {
         messages.value.push(payload.new as Message)
         await nextTick()
@@ -99,6 +105,27 @@ onMounted(async () => {
       },
     )
     .subscribe()
+}
+
+async function initMessages(room: string) {
+  await fetchMessages(room)
+  subscribeMsgs(room)
+}
+
+// When the user logs in, load messages for current land
+watch(me, async (newMe, oldMe) => {
+  if (newMe && !oldMe) await initMessages(landId.value)
+})
+
+// When navigating between lands, reload messages
+watch(landId, async (newLand) => {
+  if (!me.value) return
+  messages.value = []
+  await initMessages(newLand)
+})
+
+onMounted(async () => {
+  if (me.value) await initMessages(landId.value)
 })
 
 onUnmounted(() => {
@@ -110,8 +137,9 @@ onUnmounted(() => {
   <!-- Join screen -->
   <div v-if="!me" class="join-screen">
     <div class="join-card">
-      <h2>Join the chat</h2>
-      <p>Pick a username to get started</p>
+      <div class="join-land">#{{ landId }}</div>
+      <h2>Join the land</h2>
+      <p>Pick a username to enter</p>
       <form @submit.prevent="join">
         <input
           v-model="usernameInput"
@@ -121,18 +149,18 @@ onUnmounted(() => {
           maxlength="32"
         />
         <p v-if="joiningError" class="join-error">{{ joiningError }}</p>
-        <button class="join-btn" type="submit">Join →</button>
+        <button class="join-btn" type="submit">Enter →</button>
       </form>
     </div>
   </div>
 
-  <!-- Chat UI -->
+  <!-- Land UI -->
   <div v-else class="chat-layout">
-    <OnlineList :users="onlineUsers" :currentUserId="me.id" room="main" />
+    <OnlineList :users="onlineUsers" :currentUserId="me.id" :room="landId" />
 
     <div class="chat-container">
       <div class="chat-header">
-        Chat
+        <span class="chat-land">#{{ landId }}</span>
         <span class="chat-identity">as <strong>{{ me.username }}</strong></span>
       </div>
 
@@ -160,7 +188,7 @@ onUnmounted(() => {
           v-model="input"
           class="chat-input"
           type="text"
-          placeholder="Type a message…"
+          :placeholder="`Message #${landId}…`"
           autocomplete="off"
         />
         <button class="chat-send" type="submit">Send</button>
@@ -170,6 +198,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── Join ── */
 .join-screen {
   display: flex;
   align-items: center;
@@ -189,8 +218,23 @@ onUnmounted(() => {
   gap: 0.5rem;
 }
 
-.join-card h2 { margin: 0; font-size: 1.4rem; }
-.join-card p { margin: 0 0 0.5rem; color: #6b7280; font-size: 0.9rem; }
+.join-land {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #6366f1;
+  letter-spacing: 0.02em;
+}
+
+.join-card h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.join-card p {
+  margin: 0 0 0.5rem;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
 
 .join-input {
   width: 100%;
@@ -205,7 +249,12 @@ onUnmounted(() => {
 }
 
 .join-input:focus { border-color: #6366f1; }
-.join-error { margin: 0 0 0.5rem; color: #ef4444; font-size: 0.82rem; }
+
+.join-error {
+  margin: 0 0 0.5rem;
+  color: #ef4444;
+  font-size: 0.82rem;
+}
 
 .join-btn {
   width: 100%;
@@ -222,8 +271,14 @@ onUnmounted(() => {
 
 .join-btn:hover { background: #4f46e5; }
 
-.chat-layout { display: flex; height: 100vh; overflow: hidden; }
+/* ── Layout ── */
+.chat-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
 
+/* ── Chat ── */
 .chat-container {
   flex: 1;
   display: flex;
@@ -232,9 +287,7 @@ onUnmounted(() => {
 }
 
 .chat-header {
-  padding: 1rem 1.5rem;
-  font-size: 1.1rem;
-  font-weight: 700;
+  padding: 0.85rem 1.5rem;
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
   display: flex;
@@ -242,7 +295,16 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 
-.chat-identity { font-size: 0.8rem; font-weight: 400; color: #9ca3af; }
+.chat-land {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #111827;
+}
+
+.chat-identity {
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
 
 .chat-list {
   flex: 1;
@@ -266,10 +328,29 @@ onUnmounted(() => {
   gap: 0.15rem;
 }
 
-.chat-message--self .chat-bubble { background: #6366f1; color: #fff; }
-.chat-author { font-size: 0.7rem; font-weight: 600; opacity: 0.65; }
-.chat-text { margin: 0; font-size: 0.95rem; line-height: 1.4; word-break: break-word; }
-.chat-time { font-size: 0.65rem; opacity: 0.5; align-self: flex-end; }
+.chat-message--self .chat-bubble {
+  background: #6366f1;
+  color: #fff;
+}
+
+.chat-author {
+  font-size: 0.7rem;
+  font-weight: 600;
+  opacity: 0.65;
+}
+
+.chat-text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.chat-time {
+  font-size: 0.65rem;
+  opacity: 0.5;
+  align-self: flex-end;
+}
 
 .chat-input-row {
   display: flex;
@@ -305,6 +386,12 @@ onUnmounted(() => {
 
 .chat-send:hover { background: #4f46e5; }
 
-.chat-status { text-align: center; color: #9ca3af; font-size: 0.85rem; padding: 1rem 0; }
+.chat-status {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.85rem;
+  padding: 1rem 0;
+}
+
 .chat-status--error { color: #ef4444; }
 </style>
