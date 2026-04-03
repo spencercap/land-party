@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
 
-const props = defineProps<{
-  landId: string
-}>()
+const props = defineProps<{ landId: string }>()
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 
@@ -13,157 +11,193 @@ let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
 let animId: number
 let resizeObserver: ResizeObserver
+let playerMesh: THREE.Mesh
 
-// Objects we'll animate
-let terrain: THREE.Mesh
-let particles: THREE.Points
-let ambientLight: THREE.AmbientLight
-let dirLight: THREE.DirectionalLight
+const keys = new Set<string>()
 
-// Derive a deterministic hue from the landId string
-function landHue(id: string): number {
+const MOVE_SPEED = 0.13
+const ROT_SPEED  = 0.045
+const CAM_DIST   = 9
+const CAM_HEIGHT = 5.5
+
+const _camTarget = new THREE.Vector3()
+const _camDesired = new THREE.Vector3()
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function hueFrom(id: string) {
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffffff
   return (h % 360) / 360
 }
 
+// ── Scene build ───────────────────────────────────────────────────────────────
+
 function buildScene(landId: string) {
+  // Wipe everything except renderer / camera
   scene.clear()
+  keys.clear()
 
-  const hue = landHue(landId)
-  const primary = new THREE.Color().setHSL(hue, 0.7, 0.5)
-  const secondary = new THREE.Color().setHSL((hue + 0.55) % 1, 0.6, 0.35)
+  const hue  = hueFrom(landId)
+  const fog  = new THREE.Color().setHSL(hue, 0.15, 0.04)
+  const accent = new THREE.Color().setHSL(hue, 0.85, 0.55)
 
-  // Sky gradient via background color
-  renderer.setClearColor(new THREE.Color().setHSL(hue, 0.4, 0.08))
-
-  // Fog
-  scene.fog = new THREE.FogExp2(renderer.getClearColor(new THREE.Color()), 0.035)
+  renderer.setClearColor(fog)
+  scene.fog = new THREE.Fog(fog, 18, 55)
 
   // Lights
-  ambientLight = new THREE.AmbientLight(0xffffff, 0.4)
-  dirLight = new THREE.DirectionalLight(primary, 1.8)
-  dirLight.position.set(5, 10, 5)
-  scene.add(ambientLight, dirLight)
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55))
+  const sun = new THREE.DirectionalLight(accent, 1.6)
+  sun.position.set(8, 14, 6)
+  sun.castShadow = true
+  sun.shadow.mapSize.set(1024, 1024)
+  sun.shadow.camera.far = 80
+  scene.add(sun)
 
-  // Terrain — subdivided plane with displaced vertices
-  const geo = new THREE.PlaneGeometry(40, 40, 80, 80)
-  geo.rotateX(-Math.PI / 2)
-  const pos = geo.attributes.position
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const z = pos.getZ(i)
-    const y =
-      Math.sin(x * 0.3) * Math.cos(z * 0.3) * 1.2 +
-      Math.sin(x * 0.7 + 1) * Math.cos(z * 0.5) * 0.5
-    pos.setY(i, y)
+  // Grid floor
+  const grid = new THREE.GridHelper(300, 300,
+    new THREE.Color().setHSL(hue, 0.3, 0.18),
+    new THREE.Color().setHSL(hue, 0.15, 0.1),
+  )
+  scene.add(grid)
+
+  // Solid ground beneath grid (receives shadows)
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(300, 300).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(hue, 0.2, 0.05),
+      roughness: 1,
+    }),
+  )
+  ground.position.y = -0.001
+  ground.receiveShadow = true
+  scene.add(ground)
+
+  // Player cube
+  const playerColor = new THREE.Color().setHSL(hue, 0.9, 0.62)
+  playerMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshStandardMaterial({
+      color: playerColor,
+      emissive: playerColor,
+      emissiveIntensity: 0.35,
+      roughness: 0.35,
+      metalness: 0.4,
+    }),
+  )
+  playerMesh.position.set(0, 0.5, 0)
+  playerMesh.castShadow = true
+  scene.add(playerMesh)
+
+  // Player direction indicator (a small darker face on the "front")
+  const nose = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.3, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 1 }),
+  )
+  nose.position.set(0, 0, -0.53)
+  playerMesh.add(nose)
+
+  // Decorative voxels scattered in the world
+  const voxColor = new THREE.Color().setHSL((hue + 0.5) % 1, 0.6, 0.38)
+  const voxMat = new THREE.MeshStandardMaterial({ color: voxColor, roughness: 0.75 })
+  for (let i = 0; i < 40; i++) {
+    const w = 0.8 + Math.random() * 1.2
+    const h = 1 + Math.random() * 3.5
+    const vox = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), voxMat)
+    const angle = Math.random() * Math.PI * 2
+    const dist  = 10 + Math.random() * 40
+    vox.position.set(Math.cos(angle) * dist, h / 2, Math.sin(angle) * dist)
+    vox.castShadow = true
+    scene.add(vox)
   }
-  pos.needsUpdate = true
-  geo.computeVertexNormals()
 
-  const mat = new THREE.MeshStandardMaterial({
-    color: secondary,
-    roughness: 0.85,
-    metalness: 0.1,
-    wireframe: false,
-  })
-  terrain = new THREE.Mesh(geo, mat)
-  scene.add(terrain)
-
-  // Floating particles
-  const pCount = 600
-  const pPositions = new Float32Array(pCount * 3)
-  for (let i = 0; i < pCount; i++) {
-    pPositions[i * 3] = (Math.random() - 0.5) * 30
-    pPositions[i * 3 + 1] = Math.random() * 10
-    pPositions[i * 3 + 2] = (Math.random() - 0.5) * 30
-  }
-  const pGeo = new THREE.BufferGeometry()
-  pGeo.setAttribute('position', new THREE.BufferAttribute(pPositions, 3))
-  const pMat = new THREE.PointsMaterial({ color: primary, size: 0.08, sizeAttenuation: true })
-  particles = new THREE.Points(pGeo, pMat)
-  scene.add(particles)
-
-  // Floating icosahedra
-  for (let i = 0; i < 8; i++) {
-    const r = 0.2 + Math.random() * 0.6
-    const g = new THREE.IcosahedronGeometry(r, 0)
-    const m = new THREE.MeshStandardMaterial({
-      color: primary,
-      roughness: 0.3,
-      metalness: 0.7,
-      emissive: primary,
-      emissiveIntensity: 0.15,
-    })
-    const mesh = new THREE.Mesh(g, m)
-    mesh.position.set(
-      (Math.random() - 0.5) * 20,
-      2 + Math.random() * 5,
-      (Math.random() - 0.5) * 20,
-    )
-    mesh.userData.floatOffset = Math.random() * Math.PI * 2
-    mesh.userData.rotSpeed = (Math.random() - 0.5) * 0.02
-    scene.add(mesh)
-  }
+  // Reset camera behind player
+  camera.position.set(0, CAM_HEIGHT, CAM_DIST)
+  camera.lookAt(0, 0.5, 0)
 }
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+function onKeyDown(e: KeyboardEvent) {
+  keys.add(e.code)
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault()
+}
+function onKeyUp(e: KeyboardEvent) { keys.delete(e.code) }
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+
+function animate() {
+  animId = requestAnimationFrame(animate)
+
+  if (playerMesh) {
+    // Rotate player left / right
+    if (keys.has('ArrowLeft'))  playerMesh.rotation.y += ROT_SPEED
+    if (keys.has('ArrowRight')) playerMesh.rotation.y -= ROT_SPEED
+
+    // Move forward / backward along player's facing direction
+    const ry = playerMesh.rotation.y
+    if (keys.has('ArrowUp')) {
+      playerMesh.position.x -= Math.sin(ry) * MOVE_SPEED
+      playerMesh.position.z -= Math.cos(ry) * MOVE_SPEED
+    }
+    if (keys.has('ArrowDown')) {
+      playerMesh.position.x += Math.sin(ry) * MOVE_SPEED
+      playerMesh.position.z += Math.cos(ry) * MOVE_SPEED
+    }
+
+    // 3rd-person camera: sit behind & above the player, lerp smoothly
+    _camDesired.set(
+      playerMesh.position.x + Math.sin(ry) * CAM_DIST,
+      playerMesh.position.y + CAM_HEIGHT,
+      playerMesh.position.z + Math.cos(ry) * CAM_DIST,
+    )
+    camera.position.lerp(_camDesired, 0.08)
+
+    _camTarget.set(
+      playerMesh.position.x,
+      playerMesh.position.y + 0.5,
+      playerMesh.position.z,
+    )
+    camera.lookAt(_camTarget)
+  }
+
+  renderer.render(scene, camera)
+}
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 function init() {
   const canvas = canvasEl.value!
-  const w = canvas.clientWidth
-  const h = canvas.clientHeight
+  const w = canvas.clientWidth || canvas.offsetWidth
+  const h = canvas.clientHeight || canvas.offsetHeight
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setSize(w, h, false)
+  renderer.shadowMap.enabled = true
 
-  scene = new THREE.Scene()
-
-  camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 200)
-  camera.position.set(0, 6, 14)
-  camera.lookAt(0, 0, 0)
+  camera = new THREE.PerspectiveCamera(58, w / h, 0.1, 300)
+  scene  = new THREE.Scene()
 
   buildScene(props.landId)
 
   resizeObserver = new ResizeObserver(() => {
     const w2 = canvas.clientWidth
     const h2 = canvas.clientHeight
+    if (!w2 || !h2) return
     renderer.setSize(w2, h2, false)
     camera.aspect = w2 / h2
     camera.updateProjectionMatrix()
   })
   resizeObserver.observe(canvas)
 
+  window.addEventListener('keydown', onKeyDown, { passive: false })
+  window.addEventListener('keyup', onKeyUp)
+
   animate()
 }
 
-function animate() {
-  animId = requestAnimationFrame(animate)
-  const t = performance.now() * 0.001
-
-  // Slow camera orbit
-  camera.position.x = Math.sin(t * 0.08) * 14
-  camera.position.z = Math.cos(t * 0.08) * 14
-  camera.lookAt(0, 0, 0)
-
-  // Float particles
-  particles.rotation.y = t * 0.04
-
-  // Animate icosahedra
-  scene.children.forEach((obj) => {
-    if (obj instanceof THREE.Mesh && obj !== terrain && obj.userData.floatOffset !== undefined) {
-      obj.position.y += Math.sin(t + obj.userData.floatOffset) * 0.005
-      obj.rotation.x += obj.userData.rotSpeed
-      obj.rotation.y += obj.userData.rotSpeed * 0.7
-    }
-  })
-
-  renderer.render(scene, camera)
-}
-
-// Rebuild scene when land changes
-watch(() => props.landId, (id) => {
-  if (scene) buildScene(id)
-})
+watch(() => props.landId, (id) => { if (scene) buildScene(id) })
 
 onMounted(init)
 
@@ -171,17 +205,41 @@ onUnmounted(() => {
   cancelAnimationFrame(animId)
   resizeObserver?.disconnect()
   renderer?.dispose()
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keyup', onKeyUp)
 })
 </script>
 
 <template>
-  <canvas ref="canvasEl" class="three-canvas" />
+  <div class="scene-wrap">
+    <canvas ref="canvasEl" class="scene-canvas" />
+    <div class="scene-hint">↑ ↓ move &nbsp;·&nbsp; ← → turn</div>
+  </div>
 </template>
 
 <style scoped>
-.three-canvas {
+.scene-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.scene-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.72rem;
+  font-family: monospace;
+  color: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
 }
 </style>
