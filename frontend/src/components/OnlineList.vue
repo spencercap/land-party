@@ -31,14 +31,14 @@ defineProps<{
 
 <style scoped>
 .presence-sidebar {
-  width: 200px;
   flex-shrink: 0;
-  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
   background: #fafafa;
   display: flex;
   flex-direction: column;
-  padding: 1rem;
-  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  gap: 0.5rem;
+  max-height: 160px;
   overflow-y: auto;
 }
 
@@ -67,8 +67,8 @@ defineProps<{
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
 }
 
 .presence-item {

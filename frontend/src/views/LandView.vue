@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { supabase } from '../utils/supabase'
 import { usePresence } from '../composables/usePresence'
 import OnlineList from '../components/OnlineList.vue'
+import ThreeScene from '../components/ThreeScene.vue'
 
 interface Message {
   id: number
@@ -155,44 +156,52 @@ onUnmounted(() => {
   </div>
 
   <!-- Land UI -->
-  <div v-else class="chat-layout">
-    <OnlineList :users="onlineUsers" :currentUserId="me.id" :room="landId" />
+  <div v-else class="land-layout">
+    <!-- Left: 3-D scene -->
+    <div class="scene-panel">
+      <ThreeScene :landId="landId" />
+    </div>
 
-    <div class="chat-container">
-      <div class="chat-header">
-        <span class="chat-land">#{{ landId }}</span>
-        <span class="chat-identity">as <strong>{{ me.username }}</strong></span>
-      </div>
+    <!-- Right: presence + chat -->
+    <div class="side-panel">
+      <OnlineList :users="onlineUsers" :currentUserId="me.id" :room="landId" />
 
-      <div class="chat-list" ref="listEl">
-        <div v-if="loading" class="chat-status">Loading…</div>
-        <div v-else-if="error" class="chat-status chat-status--error">{{ error }}</div>
-        <template v-else>
-          <div
-            v-for="msg in messages"
-            :key="msg.id"
-            class="chat-message"
-            :class="{ 'chat-message--self': msg.user_id === me.id }"
-          >
-            <div class="chat-bubble">
-              <span class="chat-author">{{ msg.username }}</span>
-              <p class="chat-text">{{ msg.text }}</p>
-              <span class="chat-time">{{ formatTime(msg.created_at) }}</span>
+      <div class="chat-container">
+        <div class="chat-header">
+          <span class="chat-land">#{{ landId }}</span>
+          <span class="chat-identity">as <strong>{{ me.username }}</strong></span>
+        </div>
+
+        <div class="chat-list" ref="listEl">
+          <div v-if="loading" class="chat-status">Loading…</div>
+          <div v-else-if="error" class="chat-status chat-status--error">{{ error }}</div>
+          <template v-else>
+            <div
+              v-for="msg in messages"
+              :key="msg.id"
+              class="chat-message"
+              :class="{ 'chat-message--self': msg.user_id === me.id }"
+            >
+              <div class="chat-bubble">
+                <span class="chat-author">{{ msg.username }}</span>
+                <p class="chat-text">{{ msg.text }}</p>
+                <span class="chat-time">{{ formatTime(msg.created_at) }}</span>
+              </div>
             </div>
-          </div>
-        </template>
-      </div>
+          </template>
+        </div>
 
-      <form class="chat-input-row" @submit.prevent="send">
-        <input
-          v-model="input"
-          class="chat-input"
-          type="text"
-          :placeholder="`Message #${landId}…`"
-          autocomplete="off"
-        />
-        <button class="chat-send" type="submit">Send</button>
-      </form>
+        <form class="chat-input-row" @submit.prevent="send">
+          <input
+            v-model="input"
+            class="chat-input"
+            type="text"
+            :placeholder="`Message #${landId}…`"
+            autocomplete="off"
+          />
+          <button class="chat-send" type="submit">Send</button>
+        </form>
+      </div>
     </div>
   </div>
 </template>
@@ -272,9 +281,27 @@ onUnmounted(() => {
 .join-btn:hover { background: #4f46e5; }
 
 /* ── Layout ── */
-.chat-layout {
+.land-layout {
   display: flex;
   height: 100vh;
+  overflow: hidden;
+}
+
+/* Left panel: Three.js scene */
+.scene-panel {
+  flex: 1;
+  min-width: 0;
+  background: #0a0a0f;
+  position: relative;
+}
+
+/* Right panel: presence + chat stacked */
+.side-panel {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #e5e7eb;
   overflow: hidden;
 }
 
@@ -283,7 +310,7 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  min-height: 0;
 }
 
 .chat-header {
