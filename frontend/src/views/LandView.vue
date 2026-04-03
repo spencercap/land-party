@@ -132,6 +132,41 @@ onMounted(async () => {
 onUnmounted(() => {
   msgChannel?.unsubscribe()
 })
+
+// ── Video ─────────────────────────────────────────────────────────────────────
+
+const videoId        = ref<string | undefined>(undefined)
+const showVideoInput = ref(false)
+const videoUrlInput  = ref('')
+const videoInputEl   = ref<HTMLInputElement | null>(null)
+
+function extractYouTubeId(url: string): string | null {
+  const m = url.match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/,
+  )
+  return m ? m[1] : null
+}
+
+async function openVideoInput() {
+  showVideoInput.value = true
+  await nextTick()
+  videoInputEl.value?.focus()
+}
+
+function submitVideo() {
+  const id = extractYouTubeId(videoUrlInput.value.trim())
+  if (!id) return
+  videoId.value = id
+  videoUrlInput.value  = ''
+  showVideoInput.value = false
+}
+
+function clearVideo() {
+  videoId.value = undefined
+}
+
+// Also clear video when navigating to a new land
+watch(landId, () => { videoId.value = undefined })
 </script>
 
 <template>
@@ -159,7 +194,32 @@ onUnmounted(() => {
   <div v-else class="land-layout">
     <!-- Left: 3-D scene -->
     <div class="scene-panel">
-      <ThreeScene :landId="landId" />
+      <ThreeScene :landId="landId" :videoId="videoId" />
+
+      <!-- Video controls overlay -->
+      <div class="video-overlay">
+        <template v-if="showVideoInput">
+          <form class="video-form" @submit.prevent="submitVideo">
+            <input
+              ref="videoInputEl"
+              v-model="videoUrlInput"
+              class="video-input"
+              placeholder="Paste YouTube URL…"
+              autocomplete="off"
+            />
+            <button class="video-btn video-btn--place" type="submit">Place</button>
+            <button class="video-btn video-btn--cancel" type="button" @click="showVideoInput = false">✕</button>
+          </form>
+        </template>
+        <template v-else>
+          <button v-if="!videoId" class="video-btn video-btn--add" @click="openVideoInput">
+            📺 Add video
+          </button>
+          <button v-else class="video-btn video-btn--remove" @click="clearVideo">
+            ✕ Remove video
+          </button>
+        </template>
+      </div>
     </div>
 
     <!-- Right: presence + chat -->
@@ -421,4 +481,64 @@ onUnmounted(() => {
 }
 
 .chat-status--error { color: #ef4444; }
+
+/* ── Video overlay ── */
+.video-overlay {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  z-index: 10;
+}
+
+.video-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.video-input {
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 0.85rem;
+  outline: none;
+  width: 220px;
+  transition: border-color 0.15s;
+}
+
+.video-input::placeholder { color: rgba(255, 255, 255, 0.4); }
+.video-input:focus { border-color: rgba(255,255,255,0.5); }
+
+.video-btn {
+  padding: 0.35rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.video-btn:hover { opacity: 0.85; }
+
+.video-btn--add {
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+.video-btn--place { background: #6366f1; color: #fff; }
+.video-btn--cancel { background: rgba(255,255,255,0.15); color: #fff; }
+.video-btn--remove { background: rgba(239,68,68,0.75); color: #fff; backdrop-filter: blur(6px); }
 </style>
